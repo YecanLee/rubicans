@@ -61,3 +61,31 @@ class FeedFoward(nn.Module):
 
     def forward(self, *args, **kargs):
         pass
+
+class SpatialTransformer(nn.Module):
+    def __init__(self, *args, **kargs):
+        super().__init__()
+
+    def forward(self, *args, **kargs):
+        pass
+
+class TimeStepEmbSequantial(nn.Module):
+    def __init__(self, *args, **kargs):
+        super().__init__()
+
+    def forward(self, *args, **kargs):
+        pass
+
+class Upsample(nn.Module):
+    def __init__(self, *args, **kargs):
+        super().__init__()
+
+    def forward(self, *args, **kargs):
+        pass
+
+class Downsample(nn.Module):
+    def __init__(self, *args, **kargs):
+        super().__init__()
+
+    def forward(self, *args, **kargs):
+        pass
