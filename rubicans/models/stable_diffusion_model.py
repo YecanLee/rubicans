@@ -89,3 +89,24 @@ class Downsample(nn.Module):
 
     def forward(self, *args, **kargs):
         pass
+
+class Encoder(nn.Module):
+    def __init__(self, *args, **kargs):
+        super().__init__()
+
+    def forward(self, *args, **kargs):
+        pass
+
+class Decoder(nn.Module):
+    def __init__(self, *args, **kargs):
+        super().__init__()
+
+    def forward(self, *args, **kargs):
+        pass
+
+class AttnBlock(nn.Module):
+    def __init__(self, *args, **kargs):
+        super().__init__()
+
+    def forward(self, *args, **kargs):
+        pass
