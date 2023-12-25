@@ -13,7 +13,7 @@ from torch.nn import BCEWithLogitsLoss, CrossEntropyLoss, MSELoss
 from einops import rearrange
 
 class Config:
-    image_size = [224, 224]
+    image_size = [1280, 240]
     patch_size = 16
     num_channels = 1
     num_patches = (image_size[0] * image_size[1] // patch_size * patch_size) ** 2
@@ -198,8 +198,8 @@ class FocusedLinearAttention(nn.Module):
         k = self.key(x)
         v = self.value(x)
 
-        h = int(math.sqrt(n))
-        w = int(math.sqrt(n))
+        h = Config.image_size[0] // Config.patch_size
+        w = Config.image_size[1] // Config.patch_size
 
         x = x.permute(0, 2, 1).reshape(b, c, h, w)
         
@@ -232,8 +232,8 @@ class FocusedLinearAttention(nn.Module):
             qk = torch.einsum("b i c, b j c -> b i j", q, k)
             x = torch.einsum("b i j, b j d, b i -> b i d", qk, v, z)
 
-        num = int(v.shape[1] ** 0.5)
-        feature_map = rearrange(v, "b (w h) c -> b c w h", w=num, h=num)
+        # num = int(v.shape[1] ** 0.5, if the image is a square.
+        feature_map = rearrange(v, "b (w h) c -> b c w h", w=h, h=w)
         feature_map = rearrange(self.dwc(feature_map), "b c w h -> b (w h) c")
         x = x + feature_map
         x = rearrange(x, "(b h) n c -> b n (h c)", h=self.num_heads)
@@ -423,7 +423,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 model.to(device)
 
 # A simple debuggin test
-test_image = torch.randn(32, 1, 224, 224)
+test_image = torch.randn(32, 1, 1280, 240)
 test_image = test_image.to(device)
 with torch.no_grad():
     model_output = model(test_image)
