@@ -69,3 +69,7 @@ class DDPMSchduler(SchedulerMixin, ConfigMixin):
     The SchedulerMixin and ConfigMixin are used to store the results of the scheduler
     """
     
+class EMA:
+    def __init__(self, mu:float):
+        self.mu = mu
+        self.shadow = {}    
