@@ -73,7 +73,7 @@ class DDPMSchduler(SchedulerMixin, ConfigMixin):
     variance: clip the variance of the noise to control the noise level
     clip_sample: clip the sample to control the noise level
     prediction_type: whether to predict the noise epsilon or to predict the x_0 directly
-    an offset added to the inference step to make sure that the inference step is not the same as the training step
+    steps_offset: the offset of the steps added to the inference step, 
     """
     def __init__(self,
                  num_training_steps: int = 1000,
@@ -95,14 +95,14 @@ class DDPMSchduler(SchedulerMixin, ConfigMixin):
         if trained_betas is not None:
             self.betas = torch.Tensor(trained_betas, dtype=torch.float32)
         elif beta_scheduler == 'linear':
-            self.betas = torch.linespace(beta_start, beta_end, num_training_steps, dtype = torch.float32)
+            self.betas = torch.linspace(beta_start, beta_end, num_training_steps, dtype = torch.float32)
         elif beta_scheduler == 'scaled_linear':
             # this scheduler only works latent diffusion models
-            self.betas = torch.linespace(beta_start**0.5, beta_end**0.5, num_training_steps, dtype=torch.float32)**2
+            self.betas = torch.linspace(beta_start**0.5, beta_end**0.5, num_training_steps, dtype=torch.float32)**2
         elif beta_scheduler == 'squaredcos_cap_v2':
             self.betas = betas_for_alpha_bar(num_training_steps)
         elif beta_scheduler == 'sigmoid':
-            beta = torch.linespace(-6, 6, num_training_steps, dtype=torch.float32)
+            beta = torch.linspace(-6, 6, num_training_steps, dtype=torch.float32)
             self.betas = torch.sigmoid(beta)*(beta_end - beta_start) + beta_start
         else:
             raise NotImplementedError(f'beta_scheduler {beta_scheduler} is not implemented for {self.__class__}')
@@ -117,11 +117,16 @@ class DDPMSchduler(SchedulerMixin, ConfigMixin):
         self.one = torch.Tensor(1.0)
 
         self.init_noise_sigma = 1.0
+        self.num_training_steps = num_training_steps    
 
         self.custom_timesteps = None
         self.num_inference_steps = False
+        # Here is the basic timesteps scheduler without time spacing
         self.timesteps = torch.from_numpy(np.arange(0, num_training_steps)[::-1].copy())
         self.variance_type = variance
+
+        self.steps_offset = steps_offset
+        self.timestep_spacing = timestep_spacing
     
     def scale_model_input(self, x: torch.FloatTensor, timestep: Optional[int] = None) -> torch.FloatTensor:
         """
@@ -153,6 +158,47 @@ class DDPMSchduler(SchedulerMixin, ConfigMixin):
             for i in range(1, len(timesteps)-1):
                 if timesteps[i] >= timesteps[i-1]:
                     raise ValueError('The timesteps must be in descending order')
+                if timesteps[i] >= self.num_training_steps:
+                    raise ValueError(f'The timesteps must be smaller than the number of training steps {self.num_training_steps}')
+                timesteps = np.array(timesteps)
+                self.custom_timesteps = True
+            else:
+                if num_inference_steps > self.num_training_steps:
+                    raise ValueError(f'The inference steps: {num_inference_steps} must be smaller than the training timesteps:
+                                     {self.num_training_steps} as the UNet model with this specific schduler is only capaple of 
+                                     dealing with this number of denoising timesteps: {self.num_training_steps}')
+
+                self.num_inference_steps = num_inference_steps
+                self.custom_timesteps = False
+
+                # The following section was mentioned in the paper "Common Diffusion Noise Schedules and Sample Steps are flawed"
+                # Please check the table 2, Discretization for more details    
+                # We need a denoising scheduler, thus we need to add [::-1]
+                # The comment under this table also mentioned that in practice the timestep range would be [0, 999] instead of [1, 1000]
+            if self.timestep_spacing == 'linspace':
+                timesteps = np.linspace(0, self.num_training_steps - 1, self.num_inference_steps).round()[::-1].copy().astype(np.int64)
+            #elif self.timestep_spacing == 'leading':
+                #timesteps = np.arange(1, self.num_training_steps, self.num_training_steps//self.num_inference_steps)[::-1].copy().astype(np.int64)
+            elif self.timestep_spacing == 'leading':
+                factor = self.num_training_steps//self.num_inference_steps
+                timesteps = (np.arange(0, self.num_inference_steps) * factor).round()[::-1].copy().astype(np.int64)
+                timesteps += self.steps_offset
+            elif self.timestep_spacing == 'trailing':
+                factor = self.num_training_steps/self.num_inference_steps
+                timesteps = np.round(np.arange(self.num_training_steps, 0, -factor)).astype(np.int64)
+            else:
+                raise ValueError(f"The timestep spacing {self.timestep_spacing} is not supported yet,
+                                  make sure to choose one of them from 'linspace', 'leading', 'trailing'.")
         
+        # put the timesteps onto the Gpu
+        self.timesteps = torch.from_numpy(timesteps).to(device)
+
+    def _get_thresholding(self, x: torch.FloatTensor) -> torch.FloatTensor:
+        pass
+
+    def _get_variance(self, t: int, prediction_type:Optional[str]=None, variance_type:Optional[str]=None):
+        """
+        This function is based on the DDPM paper function 6 and function 7, please check the paper for the beta_bar_{t} in the function 7
+        """
         
 
