@@ -194,11 +194,110 @@ class DDPMSchduler(SchedulerMixin, ConfigMixin):
         self.timesteps = torch.from_numpy(timesteps).to(device)
 
     def _get_thresholding(self, x: torch.FloatTensor) -> torch.FloatTensor:
+        """
+        This function is used for the dynamic thresholding, a simple explanation would be:
+        During the denoising process, if the pixel value is larger than 1, and the threshold is s, then we will threshold the pixel value between [-s, s]
+        Then we will divide the pixel value by s, and then add 1 to the pixel value, this will prevent the pixel value from being saturated
+        """
         pass
 
-    def _get_variance(self, t: int, prediction_type:Optional[str]=None, variance_type:Optional[str]=None):
+    def _get_variance(self, t: int, predicted_variance:Optional[str]=None, variance_type:Optional[str]=None):
         """
         This function is based on the DDPM paper function 6 and function 7, please check the paper for the beta_bar_{t} in the function 7
         """
-        
+        prev_t = self.previous_timestep(t)
+        # the torch.cumprod will keep all the results in one tensor list, we need to use the index to get the specific value
+        alpha_t = self.alphas_bar[t]
+        alpha_prev_t = self.alphas_bar[prev_t] if prev_t >= 0 else self.one
+        # in the function 7, the beta_bar_{t} is calculated by the alpha_bar_{t} and alpha_bar_{t-1}
+        beta_t = 1 - alpha_t/alpha_prev_t   
 
+        variance = 1 - (alpha_prev_t/1 - alpha_t) * beta_t
+        # in case the variance becomes zero, clamp for the stability
+        variance = torch.clamp(variance, min=1e-5)
+         
+        if variance_type == 'fixed_small':
+            variance = variance 
+        elif variance_type == 'fixed_log_small':
+            variance = torch.log(variance)
+            variance = torch.exp(0.5 * variance)
+        elif variance_type == 'fixed_large':
+            variance = beta_t
+        elif variance_type == 'fixed_log_large':
+            variance = torch.log(beta_t)
+        elif variance_type == 'learned':
+            return predicted_variance
+        else:
+            variance_type == 'learned_range':
+            min_variance = torch.log(variance)
+            max_variance = torch.log(beta_t)
+            frac = (predicted_variance + 1)/2
+            variance = frac * max_variance + (1 - frac) * min_variance
+        
+        return variance
+    
+    def step(self, 
+             model_output: torch.FloatTensor,
+             t: int,
+             x: torch.FloatTensor,
+             generator: Optional[torch.Generator] = None,
+             return_dict: bool = True,
+             ) -> Union[DDPMSchedulerOutput, tuple]:
+        """
+        Args:
+            model_output: the output of the denoising model, this would be the predicted noise at the timestep t
+            t: the current timestep
+            x: the input of the denoising model
+            generator: the random generator
+            return_dict: whether to return the output as a dictionary
+        """
+        prev_t = self.previous_timestep(t)
+        if model_output.shape[1] == x.shape[1] * 2 and self.variance_type == ['learned', 'learned_range']:
+            model_output, predicted_variance = model_output.chunk(2, dim=1)
+        else:
+            predicted_variance = None
+
+        alpha_prod_t = self.alphas_bar[t]
+        alpha_prod_t_prev = self.alphas_bar[prev_t] if prev_t >= 0 else self.one
+        beta_prod_t = 1 - alpha_prod_t
+        beta_prod_t_prev = 1 - alpha_prod_t_prev
+        current_alpha_t = alpha_prod_t/alpha_prod_t_prev
+        current_beta_t = beta_prod_t/beta_prod_t_prev
+        
+        if self.prediction_type == 'epsilon':
+            pred_original_sample = x - ((beta_prod_t) ** 0.5) * model_output/alpha_prod_t ** 0.5 # this is the function 15 in the DDPM paper
+        if self.prediction_type == 'sample':
+            pred_original_sample = model_output
+        if self.prediction_type == 'variance':
+            pred_original_sample = (alpha_prod_t ** 0.5) * x - (beta_prod_t ** 0.5) * model_output
+        else:
+            raise ValueError(f'The prediction type {self.prediction_type} is not supported yet, please choose one of them from "epsilon", "sample", "variance"')
+        
+        # Whether to use the dynamic thresholding on the predicted x_0
+        if self.thresholding:
+            pred_original_sample = self._get_thresholding(pred_original_sample)
+        elif self.clip_sample:
+            pred_original_sample = torch.clamp(pred_original_sample, -self.clip_sample_threshold, self.clip_sample_threshold)
+        
+        # computer the coefficient for the noise, check the function 7 in the DDPM paper
+        pred_original_sample_coefficient = (alpha_prod_t_prev ** 0.5 * beta_prod_t) / beta_prod_t
+        current_sample_coefficient = (alpha_prod_t ** 0.5 * beta_prod_t_prev) / beta_prod_t
+        
+    def previous_timestep(self, t:Optional[int]=None) -> int:
+        """
+        function used to get the previous timestep, prepared for the DDPM scheduler, check the function 6 and 7 in the paper
+        """
+        if self.custom_timesteps:
+            index = (self.timesteps == t).nonzero(as_tuple=True)[0][0]
+            # check if the current timestep is the last timestep, if it is the last timestep, there would be no previous timestep, 
+            # this means that we should set the previous timestep to -1, since we are doing the denoising process in the reverse order
+            if index == self.timesteps.shape[0] - 1:
+                prev_t = torch.tensor(-1)
+            else:
+                prev_t = self.timesteps[index + 1] # denoising process is in a descending order
+        # the default num_inference_timesteps is a boolean == False
+        # If we use the original DDPM scheduler, this denoising inference scheduler would take num_training_steps to generate the image
+        else:
+            num_inference_steps = (self.num_inference_steps if self.num_inference_steps else self.num_training_steps)
+            prev_t = t - self.num_training_steps//num_inference_steps
+            return prev_t
