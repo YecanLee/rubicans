@@ -89,7 +89,7 @@ class DDIMScheduler():
                  trained_beta: Optional[Union[np.ndarray, List[float]]] = None, # this line of code is super elegent
                  clip_sample: bool = True,
                  clip_sample_threshold: float = 1.0,
-                 sample_max_value: float = 1.0,
+                 sample_max_value: float = 5.0,
                  set_alpha_to_one: bool = True,
                  thresholding: bool = False,
                  dynamic_thresholding_ratio: float = 0.995,
@@ -151,6 +151,22 @@ class DDIMScheduler():
         sample = sample.reshape(batch_size, channels*torch.prod(remaining_dims))
 
         abs_sample = torch.abs(sample)
+
+        s = torch.quantile(abs_sample, self.dynamic_thresholding_ratio, dim=1)
+
+        s = torch.clamp(s, min=1, max=self.sample_max_value)
+        s = s.unsqueeze(1) # add one dimension
+
+        sample = torch.clamp(sample, min = -s, max = s) / s
+        sample = sample.reshape(batch_size, channels, *remaining_dims)
+        sample = sample.to(dtype)   
+        return sample
+    
+    
+    
+
+        
+
 
 
         
